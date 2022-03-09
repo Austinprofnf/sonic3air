@@ -13,7 +13,6 @@
 #include "lemon/compiler/Parser.h"
 #include "lemon/compiler/ParserTokens.h"
 #include "lemon/compiler/Preprocessor.h"
-#include "lemon/compiler/TokenProcessing.h"
 #include "lemon/compiler/TokenTypes.h"
 #include "lemon/compiler/Utility.h"
 #include "lemon/program/GlobalsLookup.h"
@@ -45,62 +44,47 @@ namespace lemon
 	{
 		BlockNode& mBlockNode;
 		size_t mCurrentIndex = 0;
+		std::vector<size_t> mIndicesToErase;
 
-		inline NodesIterator(BlockNode& blockNode) : mBlockNode(blockNode) {}
-		inline void operator++()		{ ++mCurrentIndex; }
-		inline Node& operator*() const	{ return mBlockNode.mNodes[mCurrentIndex]; }
-		inline bool valid() const		{ return (mCurrentIndex < mBlockNode.mNodes.size()); }
-		inline Node* peek() const		{ return (mCurrentIndex + 1 < mBlockNode.mNodes.size()) ? &mBlockNode.mNodes[mCurrentIndex + 1] : nullptr; }
-		inline void eraseCurrent()		{ mBlockNode.mNodes.erase(mCurrentIndex); --mCurrentIndex; }
-	};
+		inline NodesIterator(BlockNode& blockNode) :
+			mBlockNode(blockNode)
+		{}
 
-
-	std::pair<uint32, std::wstring> Compiler::LineNumberTranslation::translateLineNumber(uint32 lineNumber) const
-	{
-		if (mIntervals.empty())
+		inline ~NodesIterator()
 		{
-			CHECK_ERROR_NOLINE(false, "Error resolving line number");
-			return std::make_pair<uint32, std::wstring>(0, L"");
+			mBlockNode.mNodes.erase(mIndicesToErase);
 		}
 
-		// TODO: Possible optimization with binary search
-		size_t index = 0;
-		while (index+1 < mIntervals.size() && mIntervals[index+1].mStartLineNumber < lineNumber)
-			++index;
+		inline void operator++()		{ ++mCurrentIndex; }
+		inline Node& operator*() const	{ return mBlockNode.mNodes[mCurrentIndex]; }
+		inline Node* operator->() const	{ return &mBlockNode.mNodes[mCurrentIndex]; }
+		inline bool valid() const		{ return (mCurrentIndex < mBlockNode.mNodes.size()); }
+		inline Node* peek() const		{ return (mCurrentIndex + 1 < mBlockNode.mNodes.size()) ? &mBlockNode.mNodes[mCurrentIndex + 1] : nullptr; }
 
-		const Interval& interval = mIntervals[index];
-		const uint32 originalLineNumber = lineNumber - interval.mStartLineNumber + interval.mLineOffsetInFile;
-		return std::make_pair(originalLineNumber, interval.mFilename);
-	}
+		inline void eraseCurrent()
+		{
+			// For performance reasons, don't erase it here already, but all of these in one go later on
+			if (mIndicesToErase.empty())
+				mIndicesToErase.reserve(mBlockNode.mNodes.size() / 2);
+			mIndicesToErase.push_back(mCurrentIndex);
+		}
+	};
 
-	void Compiler::LineNumberTranslation::push(uint32 currentLineNumber, const std::wstring& filename, uint32 lineOffsetInFile)
-	{
-		const bool updateLastEntry = (!mIntervals.empty() && mIntervals.back().mStartLineNumber == currentLineNumber);
-		Interval& interval = updateLastEntry ? mIntervals.back() : vectorAdd(mIntervals);
-		interval.mStartLineNumber = currentLineNumber;
-		interval.mFilename = filename;
-		interval.mLineOffsetInFile = lineOffsetInFile;
-	}
-
-
-	Compiler::Compiler(Module& module, GlobalsLookup& globalsLookup) :
-		mModule(module),
-		mGlobalsLookup(globalsLookup),
-		mPreprocessor(*new Preprocessor(mGlobalCompilerConfig))
-	{
-	}
 
 	Compiler::Compiler(Module& module, GlobalsLookup& globalsLookup, const CompileOptions& compileOptions) :
 		mModule(module),
 		mGlobalsLookup(globalsLookup),
 		mCompileOptions(compileOptions),
-		mPreprocessor(*new Preprocessor(mGlobalCompilerConfig))
+		mTokenProcessing(globalsLookup, mGlobalCompilerConfig),
+		mPreprocessor(mGlobalCompilerConfig, mTokenProcessing)
 	{
 	}
 
 	Compiler::~Compiler()
 	{
-		delete &mPreprocessor;
+		// Free some memory again, by shrinking at least the largest pools
+		genericmanager::Manager<Node>::shrinkAllPools();
+		genericmanager::Manager<Token>::shrinkAllPools();
 	}
 
 	bool Compiler::loadScript(const std::wstring& path)
@@ -155,15 +139,31 @@ namespace lemon
 	{
 		try
 		{
-			// Build a node hierarchy
+			// Parse all lines and make nodes out of them that form a node hierarchy
 			BlockNode rootNode;
-			compileLinesToNode(rootNode, lines);
+			buildNodesFromCodeLines(rootNode, lines);
+
+			// Identify all globals definitions (functions, global variables)
+			processGlobalDefinitions(rootNode);
 
 			// Process and compile function contents
 			for (FunctionNode* node : mFunctionNodes)
 			{
 				processSingleFunction(*node);
 			}
+
+		#if 0
+			// Just for debugging: Build compiled hash
+			{
+				uint64 hash = rmx::startFNV1a_64();
+				for (ScriptFunction* function : mModule.getScriptFunctions())
+				{
+					hash = function->addToCompiledHash(hash);
+				}
+				mModule.setCompiledCodeHash(hash);
+				RMX_LOG_INFO("Hash for module '" << mModule.getModuleName() << "' = " << rmx::hexString(hash, 16));
+			}
+		#endif
 
 			// Optional translation
 			if (!mCompileOptions.mOutputTranslatedSource.empty())
@@ -178,24 +178,16 @@ namespace lemon
 		}
 		catch (const CompilerException& e)
 		{
-			const auto& pair = mLineNumberTranslation.translateLineNumber(e.mLineNumber);
+			const auto& translated = mLineNumberTranslation.translateLineNumber(e.mError.mLineNumber);
 			ErrorMessage& error = vectorAdd(mErrors);
 			error.mMessage = e.what();
-			error.mFilename = pair.second;
-			error.mLineNumber = pair.first + 1;	// Add one because line numbers always start at 1 for user display
+			error.mFilename = translated.mSourceFileInfo->mFilename;
+			error.mError = e.mError;
+			error.mError.mLineNumber = translated.mLineNumber + 1;	// Add one because line numbers always start at 1 for user display
 		}
 
 		mFunctionNodes.clear();		// All entries got invalid anyway with root node destruction
 		return false;
-	}
-
-	void Compiler::compileLinesToNode(BlockNode& outNode, const std::vector<std::string_view>& lines)
-	{
-		// Parse all lines and make nodes out of them
-		buildNodesFromCodeLines(outNode, lines);
-
-		// Identify all globals definitions (functions, global variables)
-		processGlobalDefinitions(outNode);
 	}
 
 	bool Compiler::loadScriptInternal(const std::wstring& basepath, const std::wstring& filename, std::vector<std::string_view>& outLines, int inclusionDepth)
@@ -222,8 +214,11 @@ namespace lemon
 			return false;
 		}
 
+		// Register source file at module
+		const SourceFileInfo& sourceFileInfo = mModule.addSourceFileInfo(basepath, filename);
+
 		// Update line number translation
-		mLineNumberTranslation.push((uint32)outLines.size() + 1, filename, 0);
+		mLineNumberTranslation.push((uint32)outLines.size() + 1, sourceFileInfo, 0);
 
 		// Split input into lines
 		std::vector<std::string_view> fileLines;
@@ -242,22 +237,23 @@ namespace lemon
 		// Your turn, preprocessor
 		try
 		{
-			mPreprocessor.mPreprocessorDefinitions = &mCompileOptions.mPreprocessorDefinitions;
+			mPreprocessor.mPreprocessorDefinitions = &mGlobalsLookup.mPreprocessorDefinitions;
 			mPreprocessor.processLines(fileLines);
+			mModule.registerNewPreprocessorDefinitions(mGlobalsLookup.mPreprocessorDefinitions);
 		}
 		catch (const CompilerException& e)
 		{
 			ErrorMessage& error = vectorAdd(mErrors);
 			error.mMessage = e.what();
 			error.mFilename = filename;
-			error.mLineNumber = e.mLineNumber;
+			error.mError = e.mError;
 			return false;
 		}
 
 		// Build output
 		for (uint32 fileLineIndex = 0; fileLineIndex < (uint32)fileLines.size(); ++fileLineIndex)
 		{
-			const std::string_view& line = fileLines[fileLineIndex];
+			const std::string_view line = fileLines[fileLineIndex];
 
 			// Resolve include
 			if (line.rfind("include ", 0) == 0)
@@ -299,7 +295,7 @@ namespace lemon
 				// Update line number translation
 				//  -> Back to this file
 				const uint32 currentLineNumber = (uint32)outLines.size() + 1;
-				mLineNumberTranslation.push(currentLineNumber, filename, fileLineIndex);
+				mLineNumberTranslation.push(currentLineNumber, sourceFileInfo, fileLineIndex);
 			}
 			else
 			{
@@ -314,28 +310,20 @@ namespace lemon
 	{
 		// Parse text lines and build blocks hierarchy
 		Parser parser;
+		ParserTokenList parserTokens;
 
 		std::vector<BlockNode*> blockStack = { &rootNode };
 		uint32 lineNumber = 0;
 
-		for (const std::string_view& line : lines)
+		for (const std::string_view line : lines)
 		{
 			++lineNumber;	// First line will have number 1
 
 			// Parse text line
-			ParserTokenList parserTokens;
+			parserTokens.clear();
 			parser.splitLineIntoTokens(line, lineNumber, parserTokens);
 			if (parserTokens.empty())
 				continue;
-
-			// Collect all string literals
-			for (size_t i = 0; i < parserTokens.size(); ++i)
-			{
-				if (parserTokens[i].getType() == ParserToken::Type::STRING_LITERAL)
-				{
-					mModule.addStringLiteral(parserTokens[i].as<StringLiteralParserToken>().mString);
-				}
-			}
 
 			// Check for block begin and end
 			bool isUndefined = true;
@@ -401,50 +389,58 @@ namespace lemon
 							node.mTokenList.createBack<KeywordToken>().mKeyword = parserToken.as<KeywordParserToken>().mKeyword;
 							break;
 						}
+
 						case ParserToken::Type::VARTYPE:
 						{
 							node.mTokenList.createBack<VarTypeToken>().mDataType = parserToken.as<VarTypeParserToken>().mDataType;
 							break;
 						}
+
 						case ParserToken::Type::OPERATOR:
 						{
 							node.mTokenList.createBack<OperatorToken>().mOperator = parserToken.as<OperatorParserToken>().mOperator;
 							break;
 						}
+
 						case ParserToken::Type::LABEL:
 						{
-							node.mTokenList.createBack<LabelToken>().mName.swap(parserToken.as<LabelParserToken>().mName);
+							node.mTokenList.createBack<LabelToken>().mName = parserToken.as<LabelParserToken>().mName;
 							break;
 						}
+
 						case ParserToken::Type::PRAGMA:
 						{
 							// Just ignore this one
 							break;
 						}
+
 						case ParserToken::Type::CONSTANT:
 						{
-							node.mTokenList.createBack<ConstantToken>().mValue = parserToken.as<ConstantParserToken>().mValue;
+							ConstantToken& constantToken = node.mTokenList.createBack<ConstantToken>();
+							constantToken.mValue = parserToken.as<ConstantParserToken>().mValue;
+							constantToken.mDataType = &PredefinedDataTypes::CONST_INT;
 							break;
 						}
+
 						case ParserToken::Type::STRING_LITERAL:
 						{
-							const std::string& str = parserToken.as<StringLiteralParserToken>().mString;
-							const uint64 hash = rmx::getMurmur2_64(str);
-							const StoredString* storedString = mGlobalsLookup.getStringLiteralByHash(hash);
-							if (nullptr == storedString)
+							const FlyweightString str = parserToken.as<StringLiteralParserToken>().mString;
+							const FlyweightString* existingString = mGlobalsLookup.getStringLiteralByHash(str.getHash());
+							if (nullptr == existingString)
 							{
-								// Add as a new string literal
-								storedString = mModule.addStringLiteral(str, hash);
-								CHECK_ERROR(nullptr != storedString, "Failed to create new string literal, there's possibly too many (more than 65536)", 0);
+								// Add as a new string literal to the module
+								mModule.addStringLiteral(str);
 							}
 							ConstantToken& constantToken = node.mTokenList.createBack<ConstantToken>();
-							constantToken.mValue = storedString->getHash();
+							constantToken.mValue = str.getHash();
 							constantToken.mDataType = &PredefinedDataTypes::STRING;
 							break;
 						}
+
 						case ParserToken::Type::IDENTIFIER:
 						{
-							node.mTokenList.createBack<IdentifierToken>().mIdentifier.swap(parserToken.as<IdentifierParserToken>().mIdentifier);
+							IdentifierToken& token = node.mTokenList.createBack<IdentifierToken>();
+							token.mName = parserToken.as<IdentifierParserToken>().mName;
 							break;
 						}
 					}
@@ -459,13 +455,11 @@ namespace lemon
 	{
 		NodeList& nodes = rootNode.mNodes;
 		std::vector<PragmaNode*> currentPragmas;
-		std::vector<size_t> indicesToErase;
-		indicesToErase.reserve(nodes.size() / 2);
 
 		// Cycle through all top-level nodes to find global definitions (functions, global variables, defines)
-		for (size_t nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex)
+		for (NodesIterator nodesIterator(rootNode); nodesIterator.valid(); ++nodesIterator)
 		{
-			Node& node = nodes[nodeIndex];
+			Node& node = *nodesIterator;
 			if (node.getType() == Node::Type::PRAGMA)
 			{
 				currentPragmas.push_back(&node.as<PragmaNode>());
@@ -482,6 +476,7 @@ namespace lemon
 						case Keyword::FUNCTION:
 						{
 							// Next node must be a block node
+							const size_t nodeIndex = nodesIterator.mCurrentIndex;
 							CHECK_ERROR(nodeIndex+1 < nodes.size(), "Function definition as last node is not allowed", node.getLineNumber());
 							CHECK_ERROR(nodes[nodeIndex+1].getType() == Node::Type::BLOCK, "Expected block node after function header", node.getLineNumber());
 
@@ -497,9 +492,8 @@ namespace lemon
 							mFunctionNodes.push_back(&newNode);
 
 							// Erase block node pointer
-							//  -> For performance reasons, don't erase it here already, but all of these on one go later on
-							indicesToErase.push_back(nodeIndex + 1);
-							++nodeIndex;	// Skip next index
+							++nodesIterator;
+							nodesIterator.eraseCurrent();
 
 							// Add all pragmas associated with this function, i.e. all pragma nodes in front
 							for (PragmaNode* pragmaNode : currentPragmas)
@@ -517,12 +511,12 @@ namespace lemon
 							++offset;
 
 							CHECK_ERROR(offset < tokens.size() && tokens[offset].getType() == Token::Type::IDENTIFIER, "Expected an identifier in global variable definition", node.getLineNumber());
-							const std::string identifier = tokens[offset].as<IdentifierToken>().mIdentifier;
+							const FlyweightString identifier = tokens[offset].as<IdentifierToken>().mName;
 							++offset;
 
 							// Create global variable
 							GlobalVariable& variable = mModule.addGlobalVariable(identifier, dataType);
-							mGlobalsLookup.registerVariable(variable);
+							mGlobalsLookup.registerGlobalVariable(variable);
 
 							if (offset+2 <= tokens.size() && isOperator(tokens[offset], Operator::ASSIGN))
 							{
@@ -534,20 +528,7 @@ namespace lemon
 
 						case Keyword::CONSTANT:
 						{
-							CHECK_ERROR(tokens.size() >= 5, "Syntax error in constant definition", node.getLineNumber());
-							CHECK_ERROR(tokens[1].getType() == Token::Type::VARTYPE, "Expected a type in constant definition", node.getLineNumber());
-							CHECK_ERROR(tokens[2].getType() == Token::Type::IDENTIFIER, "Expected an identifier for constant definition", node.getLineNumber());
-							CHECK_ERROR(isOperator(tokens[3], Operator::ASSIGN), "Missing assignment in constant definition", node.getLineNumber());
-
-							// TODO: Support all statements that result in a compile-time constant
-							CHECK_ERROR(tokens[4].getType() == Token::Type::CONSTANT, "", node.getLineNumber());
-
-							const DataTypeDefinition* dataType = tokens[1].as<VarTypeToken>().mDataType;
-							const std::string identifier = tokens[2].as<IdentifierToken>().mIdentifier;
-							const uint64 constantValue = tokens[4].as<ConstantToken>().mValue;
-
-							Constant& constant = mModule.addConstant(identifier, dataType, constantValue);
-							mGlobalsLookup.registerConstant(constant);
+							processConstantDefinition(tokens, nodesIterator, nullptr);
 							break;
 						}
 
@@ -564,7 +545,7 @@ namespace lemon
 							}
 
 							CHECK_ERROR(offset < tokens.size() && tokens[offset].getType() == Token::Type::IDENTIFIER, "Expected an identifier for define", node.getLineNumber());
-							const std::string identifier = tokens[offset].as<IdentifierToken>().mIdentifier;
+							const FlyweightString identifier = tokens[offset].as<IdentifierToken>().mName;
 							++offset;
 
 							CHECK_ERROR(offset < tokens.size() && isOperator(tokens[offset], Operator::ASSIGN), "Expected '=' in define", node.getLineNumber());
@@ -611,8 +592,6 @@ namespace lemon
 				currentPragmas.clear();
 			}
 		}
-
-		nodes.erase(indicesToErase);
 	}
 
 	ScriptFunction& Compiler::processFunctionHeader(Node& node, const TokenList& tokens)
@@ -625,7 +604,7 @@ namespace lemon
 
 		++offset;
 		CHECK_ERROR(offset < tokens.size() && tokens[offset].getType() == Token::Type::IDENTIFIER, "Expected an identifier in function definition", lineNumber);
-		const std::string functionName = tokens[offset].as<IdentifierToken>().mIdentifier;
+		const FlyweightString functionName = tokens[offset].as<IdentifierToken>().mName;
 
 		++offset;
 		CHECK_ERROR(offset < tokens.size() && isOperator(tokens[offset], Operator::PARENTHESIS_LEFT), "Expected opening parentheses in function definition", lineNumber);
@@ -652,7 +631,7 @@ namespace lemon
 
 				++offset;
 				CHECK_ERROR(tokens[offset].getType() == Token::Type::IDENTIFIER, "Expected identifier in function parameter definition", lineNumber);
-				parameters.back().mIdentifier = tokens[offset].as<IdentifierToken>().mIdentifier;
+				parameters.back().mName = tokens[offset].as<IdentifierToken>().mName;
 
 				++offset;
 				CHECK_ERROR(tokens[offset].getType() == Token::Type::OPERATOR, "Expected comma or closing parentheses after function parameter definition", lineNumber);
@@ -675,14 +654,14 @@ namespace lemon
 		// Create new variables for parameters
 		for (const Function::Parameter& parameter : function.getParameters())
 		{
-			CHECK_ERROR(nullptr == function.getLocalVariableByIdentifier(parameter.mIdentifier), "Parameter name already used", lineNumber);
-			function.addLocalVariable(parameter.mIdentifier, parameter.mType, lineNumber);
+			CHECK_ERROR(nullptr == function.getLocalVariableByIdentifier(parameter.mName.getHash()), "Parameter name already used", lineNumber);
+			function.addLocalVariable(parameter.mName, parameter.mType, lineNumber);
 		}
 
 		// Set source metadata
-		const auto& pair = mLineNumberTranslation.translateLineNumber(lineNumber);
-		function.mSourceFilename = pair.second;
-		function.mSourceBaseLineOffset = lineNumber - pair.first;
+		const auto& translated = mLineNumberTranslation.translateLineNumber(lineNumber);
+		function.mSourceFileInfo = translated.mSourceFileInfo;
+		function.mSourceBaseLineOffset = lineNumber - translated.mLineNumber;
 
 		return function;
 	}
@@ -691,10 +670,11 @@ namespace lemon
 	{
 		BlockNode& content = *functionNode.mContent;
 		ScriptFunction& function = *functionNode.mFunction;
+		function.mStartLineNumber = functionNode.getLineNumber();
 
 		// Build scope context for processing
 		ScopeContext scopeContext;
-		for (LocalVariable* localVariable : function.mLocalVariablesById)
+		for (LocalVariable* localVariable : function.mLocalVariablesByID)
 		{
 			// All local variables so far have to be parameters; add each to the scope
 			scopeContext.mLocalVariables.push_back(localVariable);
@@ -763,9 +743,7 @@ namespace lemon
 				case Keyword::RETURN:
 				{
 					// Process tokens
-					const TokenProcessing::Context context(mGlobalsLookup, scopeContext.mLocalVariables, &function);
-					TokenProcessing tokenProcessing(context, mGlobalCompilerConfig);
-					tokenProcessing.processTokens(tokens, lineNumber);
+					processTokens(tokens, function, scopeContext, lineNumber);
 
 					if (tokens.size() > 1)
 					{
@@ -990,6 +968,12 @@ namespace lemon
 					return &node;
 				}
 
+				case Keyword::CONSTANT:
+				{
+					processConstantDefinition(tokens, nodesIterator, &scopeContext);
+					break;
+				}
+
 				default:
 					break;
 			}
@@ -1055,9 +1039,103 @@ namespace lemon
 
 	void Compiler::processTokens(TokenList& tokens, ScriptFunction& function, ScopeContext& scopeContext, uint32 lineNumber, const DataTypeDefinition* resultType)
 	{
-		const TokenProcessing::Context context(mGlobalsLookup, scopeContext.mLocalVariables, &function);
-		TokenProcessing tokenProcessing(context, mGlobalCompilerConfig);
-		tokenProcessing.processTokens(tokens, lineNumber, resultType);
+		mTokenProcessing.mContext.mFunction = &function;
+		mTokenProcessing.mContext.mLocalVariables = &scopeContext.mLocalVariables;
+		mTokenProcessing.mContext.mLocalConstants = &scopeContext.mLocalConstants;
+		mTokenProcessing.mContext.mLocalConstantArrays = &scopeContext.mLocalConstantArrays;
+		mTokenProcessing.processTokens(tokens, lineNumber, resultType);
+	}
+
+	void Compiler::processConstantDefinition(TokenList& tokens, NodesIterator& nodesIterator, ScopeContext* scopeContext)
+	{
+		const uint32 lineNumber = nodesIterator->getLineNumber();
+		const bool isGlobalDefinition = (nullptr == scopeContext);
+		CHECK_ERROR(tokens.size() >= 5, "Syntax error in constant definition", lineNumber);
+		static const uint64 ARRAY_NAME_HASH = rmx::getMurmur2_64(std::string_view("array"));
+
+		// Check for "constant array"
+		if (tokens[1].getType() == Token::Type::IDENTIFIER && tokens[1].as<IdentifierToken>().mName.getHash() == ARRAY_NAME_HASH)
+		{
+			CHECK_ERROR(tokens.size() == 7, "Syntax error in constant array definition", lineNumber);
+			CHECK_ERROR(isOperator(tokens[2], Operator::COMPARE_LESS), "Expected a type in <> in constant array definition", lineNumber);
+			CHECK_ERROR(tokens[3].getType() == Token::Type::VARTYPE, "Expected a type in <> in constant array definition", lineNumber);
+			CHECK_ERROR(isOperator(tokens[4], Operator::COMPARE_GREATER), "Expected a type in <> in constant array definition", lineNumber);
+			CHECK_ERROR(tokens[5].getType() == Token::Type::IDENTIFIER, "Expected identifier in constant array definition", lineNumber);
+			CHECK_ERROR(isOperator(tokens[6], Operator::ASSIGN), "Expected assignment at the end of constant array definition", lineNumber);
+
+			Node* nextNode = nodesIterator.peek();
+			CHECK_ERROR(nullptr != nextNode, "Constant array definition as last node is not allowed", lineNumber);
+			CHECK_ERROR(nextNode->getType() == Node::Type::BLOCK, "Expected block node after constant array header", lineNumber);
+
+			// Go through the block node and collect the values
+			static std::vector<uint64> values;
+			{
+				BlockNode& content = nextNode->as<BlockNode>();
+				values.clear();
+				values.reserve(0x20);
+				bool expectingComma = false;
+				for (size_t n = 0; n < content.mNodes.size(); ++n)
+				{
+					CHECK_ERROR(content.mNodes[n].getType() == Node::Type::UNDEFINED, "Syntax error inside constant array list of values", content.mNodes[n].getLineNumber());
+					UndefinedNode& listNode = content.mNodes[n].as<UndefinedNode>();
+					for (size_t i = 0; i < listNode.mTokenList.size(); ++i)
+					{
+						Token& token = listNode.mTokenList[i];
+						if (expectingComma)
+						{
+							CHECK_ERROR(isOperator(token, Operator::COMMA_SEPARATOR), "Expected a comma-separated list of constants inside constant array list of values", listNode.getLineNumber());
+							expectingComma = false;
+						}
+						else
+						{
+							CHECK_ERROR(token.getType() == Token::Type::CONSTANT, "Expected a comma-separated list of constants inside constant array list of values", listNode.getLineNumber());
+							values.push_back(token.as<ConstantToken>().mValue);
+							expectingComma = true;
+						}
+					}
+				}
+			}
+
+			ConstantArray& constantArray = mModule.addConstantArray(tokens[5].as<IdentifierToken>().mName.getString(), tokens[3].as<VarTypeToken>().mDataType, &values[0], values.size(), isGlobalDefinition);
+			if (isGlobalDefinition)
+			{
+				mGlobalsLookup.registerConstantArray(constantArray);
+			}
+			else
+			{
+				scopeContext->mLocalConstantArrays.push_back(&constantArray);
+			}
+
+			// Erase block node pointer
+			++nodesIterator;
+			nodesIterator.eraseCurrent();
+		}
+		else
+		{
+			CHECK_ERROR(tokens[1].getType() == Token::Type::VARTYPE, "Expected a type in constant definition", lineNumber);
+			CHECK_ERROR(tokens[2].getType() == Token::Type::IDENTIFIER, "Expected an identifier for constant definition", lineNumber);
+			CHECK_ERROR(isOperator(tokens[3], Operator::ASSIGN), "Missing assignment in constant definition", lineNumber);
+
+			// TODO: Support all statements that result in a compile-time constant
+			CHECK_ERROR(tokens[4].getType() == Token::Type::CONSTANT, "", lineNumber);
+
+			const DataTypeDefinition* dataType = tokens[1].as<VarTypeToken>().mDataType;
+			const FlyweightString identifier = tokens[2].as<IdentifierToken>().mName;
+			const uint64 constantValue = tokens[4].as<ConstantToken>().mValue;
+
+			if (isGlobalDefinition)
+			{
+				Constant& constant = mModule.addConstant(identifier, dataType, constantValue);
+				mGlobalsLookup.registerConstant(constant);
+			}
+			else
+			{
+				Constant& constant = vectorAdd(scopeContext->mLocalConstants);
+				constant.mName = identifier;
+				constant.mDataType = dataType;
+				constant.mValue = constantValue;
+			}
+		}
 	}
 
 	bool Compiler::processGlobalPragma(const std::string& content)
@@ -1067,11 +1145,17 @@ namespace lemon
 		str.trimWhitespace();
 		if (str.startsWith(PREFIX_FEATURE_LEVEL.c_str()) && str.endsWith(")"))
 		{
-			str.remove(0, PREFIX_FEATURE_LEVEL.size());
+			str.remove(0, (int)PREFIX_FEATURE_LEVEL.size());
 			str.remove(str.length() - 1, 1);
 			const uint64 value = rmx::parseInteger(str);
 			if (value > 0)
 			{
+				// Don't allow a higher script feature level than actually supported
+				const constexpr uint32 MAX_SCRIPT_FEATURE_LEVEL = 2;
+				if (value > MAX_SCRIPT_FEATURE_LEVEL)
+				{
+					REPORT_ERROR_CODE(CompilerError::Code::SCRIPT_FEATURE_LEVEL_TOO_HIGH, value, MAX_SCRIPT_FEATURE_LEVEL, "Script uses feature level " << value << ", but the highest supported level is " << MAX_SCRIPT_FEATURE_LEVEL);
+				}
 				mGlobalCompilerConfig.mScriptFeatureLevel = (uint32)value;
 			}
 			return true;

@@ -64,10 +64,10 @@ void logValueStr(int64 key)
 	Runtime* runtime = Runtime::getActiveRuntime();
 	RMX_CHECK(nullptr != runtime, "No lemon script runtime active", return);
 
-	const StoredString* storedString = runtime->resolveStringByKey((uint64)key);
+	const FlyweightString* storedString = runtime->resolveStringByKey((uint64)key);
 	RMX_CHECK(nullptr != storedString, "Unable to resolve format string", return);
 
-	std::cout << storedString->getString().c_str() << std::endl;
+	std::cout << storedString->getString() << std::endl;
 }
 
 void debugLog(uint64 stringHash)
@@ -75,10 +75,10 @@ void debugLog(uint64 stringHash)
 	Runtime* runtime = Runtime::getActiveRuntime();
 	RMX_CHECK(nullptr != runtime, "No lemon script runtime active", return);
 
-	const StoredString* storedString = runtime->resolveStringByKey((uint64)stringHash);
+	const FlyweightString* storedString = runtime->resolveStringByKey((uint64)stringHash);
 	RMX_CHECK(nullptr != storedString, "Unable to resolve format string", return);
 
-	std::cout << storedString->getString().c_str() << std::endl;
+	std::cout << storedString->getString() << std::endl;
 }
 
 uint32 valueD0 = 0;
@@ -221,7 +221,7 @@ int main(int argc, char** argv)
 		{
 			for (const Compiler::ErrorMessage& error : compiler.getErrors())
 			{
-				RMX_ERROR("Compile error in line " << error.mLineNumber << ":\n" << error.mMessage, );
+				RMX_ERROR("Compile error in line " << error.mError.mLineNumber << ":\n" << error.mMessage, );
 			}
 			return 0;
 		}

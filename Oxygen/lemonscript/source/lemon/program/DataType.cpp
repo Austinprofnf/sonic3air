@@ -13,11 +13,21 @@
 namespace lemon
 {
 
-	const std::string& DataTypeDefinition::toString() const
+	const std::string& VoidDataType::toString() const
 	{
-		RMX_ASSERT(mClass == Class::VOID, "Base class call to 'DataTypeDefinition::toString' is only allowed for the void type");
 		static const std::string TYPE_STRING_VOID = "void";
 		return TYPE_STRING_VOID;
+	}
+
+	uint32 IntegerDataType::getDataTypeHash() const
+	{
+		static const constexpr uint32 baseHash = ((uint32)Class::INTEGER) << 24;
+		switch (mSemantics)
+		{
+			case IntegerDataType::Semantics::BOOLEAN:	return baseHash + (uint32)BaseType::BOOL;
+			case IntegerDataType::Semantics::CONSTANT:	return baseHash + (uint32)BaseType::INT_CONST;
+			default:									return baseHash + (uint32)mBytes + ((uint32)mIsSigned * 0x80);
+		}
 	}
 
 	const std::string& IntegerDataType::toString() const

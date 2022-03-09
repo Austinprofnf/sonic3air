@@ -13,16 +13,10 @@
 
 namespace lemon
 {
-
-	class ParserTokenList;
-
-	class Parser
+	struct SourceFileInfo
 	{
-	public:
-		void splitLineIntoTokens(std::string_view input, uint32 lineNumber, ParserTokenList& outTokens);
-
-	private:
-		std::string mBufferString;
+		std::wstring mFilename;		// File name only, without path
+		std::wstring mFullPath;		// Path including file name
+		size_t mIndex = 0;
 	};
-
 }

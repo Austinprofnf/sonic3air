@@ -101,7 +101,7 @@ void lemon::TokenSerializer::serializeTokenData(VectorBinarySerializer& serializ
 		case Token::Type::LABEL:
 		{
 			LabelToken& token = token_.as<LabelToken>();
-			serializer.serialize(token.mName);
+			token.mName.serialize(serializer);
 			break;
 		}
 
@@ -117,7 +117,7 @@ void lemon::TokenSerializer::serializeTokenData(VectorBinarySerializer& serializ
 		{
 			IdentifierToken& token = token_.as<IdentifierToken>();
 			DataTypeHelper::serializeDataType(serializer, token.mDataType);
-			serializer.serialize(token.mIdentifier);
+			token.mName.serialize(serializer);
 			break;
 		}
 

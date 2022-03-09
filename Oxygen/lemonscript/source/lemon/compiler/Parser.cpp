@@ -73,7 +73,7 @@ namespace lemon
 		};
 		static std::map<uint64, std::string> reservedKeywordLookup;
 
-		void analyseIdentifier(const std::string& identifier, ParserTokenList& outTokens, uint32 lineNumber)
+		void analyseIdentifier(const std::string_view& identifier, ParserTokenList& outTokens, uint32 lineNumber)
 		{
 			const uint64 identifierHash = rmx::getMurmur2_64(identifier);
 
@@ -116,8 +116,8 @@ namespace lemon
 			}
 
 			// Check for "true", "false"
-			static const uint64 trueHash  = rmx::getMurmur2_64(std::string("true"));
-			static const uint64 falseHash = rmx::getMurmur2_64(std::string("false"));
+			static const uint64 trueHash  =  rmx::getMurmur2_64(std::string_view("true"));
+			static const uint64 falseHash =  rmx::getMurmur2_64(std::string_view("false"));
 			if (identifierHash == trueHash || identifierHash == falseHash)
 			{
 				ConstantParserToken& token = outTokens.create<ConstantParserToken>();
@@ -127,12 +127,12 @@ namespace lemon
 
 			// Just an identifier
 			IdentifierParserToken& token = outTokens.create<IdentifierParserToken>();
-			token.mIdentifier = identifier;
+			token.mName.set(identifier);
 		}
 	}
 
 
-	void Parser::splitLineIntoTokens(const std::string_view& input, uint32 lineNumber, ParserTokenList& outTokens)
+	void Parser::splitLineIntoTokens(std::string_view input, uint32 lineNumber, ParserTokenList& outTokens)
 	{
 		const size_t length = input.length();
 
@@ -155,46 +155,47 @@ namespace lemon
 			else if (ParserHelper::isDigit(firstCharacter))
 			{
 				// It is a number
-				ParserHelper::collectNumber(&input[pos], length - pos, mBufferString);
-				pos += mBufferString.length();
-				const int64 number = ParserHelper::parseInteger(mBufferString.c_str(), mBufferString.length(), lineNumber);
-
+				const char* start = &input[pos];
+				const size_t numberLength = ParserHelper::collectNumber(start, length - pos);
+				pos += numberLength;
+				const int64 number = ParserHelper::parseInteger(start, numberLength, lineNumber);
 				ConstantParserToken& token = outTokens.create<ConstantParserToken>();
 				token.mValue = number;
 			}
 			else if (ParserHelper::isLetter(firstCharacter) || (firstCharacter == '_'))
 			{
 				// It is an identifier or keyword
-				ParserHelper::collectIdentifier(&input[pos], length - pos, mBufferString);
-				pos += mBufferString.length();
-
-				analyseIdentifier(mBufferString, outTokens, lineNumber);
+				const char* start = &input[pos];
+				const size_t identifierLength = ParserHelper::collectIdentifier(start, length - pos);
+				pos += identifierLength;
+				analyseIdentifier(std::string_view(start, identifierLength), outTokens, lineNumber);
 			}
 			else if (firstCharacter == '@')
 			{
 				// It is a label
 				++pos;
-				ParserHelper::collectIdentifier(&input[pos], length - pos, mBufferString);
-				pos += mBufferString.length();
-
+				const char* start = &input[pos];
+				const size_t identifierLength = ParserHelper::collectIdentifier(start, length - pos);
+				pos += identifierLength;
 				LabelParserToken& token = outTokens.create<LabelParserToken>();
-				token.mName = '@' + mBufferString;
+				token.mName = std::string(start-1, identifierLength+1);
 			}
 			else if (ParserHelper::isOperatorCharacter(firstCharacter))
 			{
 				// It is a single operator or multiple of them
-				ParserHelper::collectOperators(&input[pos], length - pos, mBufferString);
+				const char* start = &input[pos];
+				const size_t operatorsLength = ParserHelper::collectOperators(start, length - pos);
 
 				Operator op;
-				for (size_t i = 0; i < mBufferString.length(); )
+				for (size_t i = 0; i < operatorsLength; )
 				{
-					const size_t operatorLength = ParserHelper::findOperator(&mBufferString[i], mBufferString.length() - i, op);
+					const size_t operatorLength = ParserHelper::findOperator(&start[i], operatorsLength - i, op);
 					CHECK_ERROR(operatorLength > 0, "Operator not recognized", lineNumber);
 
 					if (op == Operator::BINARY_DIVIDE)
 					{
 						// Check for comments
-						if (mBufferString[i+1] == '/')
+						if (start[i+1] == '/')
 						{
 							// Line comment: Pragma or not?
 							pos += i+2;
@@ -222,7 +223,7 @@ namespace lemon
 					i += operatorLength;
 				}
 
-				pos += mBufferString.length();
+				pos += operatorsLength;
 			}
 			else if (firstCharacter == '"')
 			{
@@ -231,7 +232,7 @@ namespace lemon
 				size_t charactersRead;
 				ParserHelper::collectStringLiteral(&input[pos], length - pos, mBufferString, charactersRead, lineNumber);
 				StringLiteralParserToken& token = outTokens.create<StringLiteralParserToken>();
-				token.mString = mBufferString;
+				token.mString.set(mBufferString);
 				pos += charactersRead + 1;
 			}
 			else

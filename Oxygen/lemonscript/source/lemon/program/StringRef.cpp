@@ -6,23 +6,17 @@
 *	or https://www.gnu.org/licenses/gpl-3.0.en.html
 */
 
-#pragma once
-
-#include <rmxbase.h>
+#include "lemon/pch.h"
+#include "lemon/program/StringRef.h"
 
 
 namespace lemon
 {
-
-	class ParserTokenList;
-
-	class Parser
+	void StringLookup::addFromList(const std::vector<FlyweightString>& list)
 	{
-	public:
-		void splitLineIntoTokens(std::string_view input, uint32 lineNumber, ParserTokenList& outTokens);
-
-	private:
-		std::string mBufferString;
-	};
-
+		for (FlyweightString str : list)
+		{
+			addString(str);
+		}
+	}
 }

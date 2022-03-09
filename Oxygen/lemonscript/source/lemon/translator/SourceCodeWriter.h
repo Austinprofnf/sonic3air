@@ -43,9 +43,8 @@ namespace lemon
 		void writeFunctionHeader(const Function& function);
 
 	public:
-		static void addDataType(String& line, BaseType dataType);
 		static void addDataType(String& line, const DataTypeDefinition* dataType);
-		static void addIdentifier(String& line, const std::string& identifier);
+		static void addIdentifier(String& line, std::string_view identifier);
 	};
 
 }

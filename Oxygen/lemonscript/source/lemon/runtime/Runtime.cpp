@@ -11,7 +11,7 @@
 #include "lemon/runtime/RuntimeFunction.h"
 #include "lemon/runtime/RuntimeOpcodeContext.h"
 #include "lemon/program/Program.h"
-#include "lemon/program/StoredString.h"
+#include "lemon/program/StringRef.h"
 
 
 namespace lemon
@@ -108,6 +108,8 @@ namespace lemon
 		// Create default control flow
 		mControlFlows.push_back(new ControlFlow(*this));
 		mSelectedControlFlow = mControlFlows[0];
+
+		mRuntimeOpcodesPool.setPageSize(0x40000);
 	}
 
 	Runtime::~Runtime()
@@ -129,6 +131,7 @@ namespace lemon
 		mRuntimeFunctions.clear();
 		mRuntimeFunctionsMapped.clear();
 		mRuntimeFunctionsBySignature.clear();
+		mRuntimeOpcodesPool.clear();
 		mStrings.clear();
 
 		if (nullptr != mProgram)
@@ -232,24 +235,16 @@ namespace lemon
 		return (nullptr != mStrings.getStringByHash(key));
 	}
 
-	const StoredString* Runtime::resolveStringByKey(uint64 key) const
+	const FlyweightString* Runtime::resolveStringByKey(uint64 key) const
 	{
 		return mStrings.getStringByHash(key);
 	}
 
-	uint64 Runtime::addString(const std::string& str)
+	uint64 Runtime::addString(std::string_view str)
 	{
-		return addString(str.c_str(), str.length());
-	}
-
-	uint64 Runtime::addString(const std::string_view& str)
-	{
-		return addString(str.data(), str.length());
-	}
-
-	uint64 Runtime::addString(const char* str, size_t length)
-	{
-		return mStrings.getOrAddString(str, length).getHash();
+		const FlyweightString flyweightString(str);
+		mStrings.addString(flyweightString);
+		return flyweightString.getHash();
 	}
 
 	int64 Runtime::getGlobalVariableValue(const Variable& variable)
@@ -269,8 +264,8 @@ namespace lemon
 
 	int64* Runtime::accessGlobalVariableValue(const Variable& variable)
 	{
-		RMX_CHECK((variable.getId() & 0xf0000000) == 0x10000000, "Variable " << variable.getName() << " is not a global variable", return nullptr);
-		const uint32 index = variable.getId() & 0x0fffffff;
+		RMX_CHECK((variable.getID() & 0xf0000000) == 0x10000000, "Variable " << variable.getName().getString() << " is not a global variable", return nullptr);
+		const uint32 index = variable.getID() & 0x0fffffff;
 		RMX_CHECK(index < mGlobalVariables.size(), "Variable index " << index << " is not valid", return nullptr);
 		return &mGlobalVariables[index];
 	}
@@ -324,7 +319,7 @@ namespace lemon
 		callFunction(*runtimeFunction);
 
 		// Build up scope accordingly (all local variables will have a value of zero, though)
-		int numLocalVars = (int)func.mLocalVariablesById.size();
+		int numLocalVars = (int)func.mLocalVariablesByID.size();
 		//for (size_t i = 0; i < offset; ++i)
 		//{
 		//	if (func.mOpcodes[i].mType == Opcode::Type::MOVE_VAR_STACK)
@@ -648,14 +643,23 @@ namespace lemon
 				controlFlow.mCallStack.resize(controlFlow.mCallStack.count);
 				for (uint16 i = 0; i < controlFlow.mCallStack.count; ++i)
 				{
-					const std::string functionName = serializer.read<std::string>();
+					const std::string_view functionName = serializer.readStringView();
 					const uint64 nameHash = rmx::getMurmur2_64(functionName);
-					const uint32 signatureHash = serializer.read<uint32>();
+					uint32 signatureHash = serializer.read<uint32>();
 					const Function* function = mProgram->getFunctionBySignature(nameHash + signatureHash, 0);	// Note that this does not support function overloading, but maybe that's no problem at all
+				#if 1
+					// This is only added (in early 2022) for compatibility with older save states and can be removed again somewhere down the line
+					if (nullptr == function && signatureHash == 0xd202ef8d)		// Signature hash for void functions has changed
+					{
+						signatureHash = 0x76e88724;
+						function = mProgram->getFunctionBySignature(nameHash + signatureHash, 0);	// Note that this does not support function overloading, but maybe that's no problem at all
+					}
+				#endif
 					if (nullptr == function || function->getType() != Function::Type::SCRIPT)
 					{
 						if (nullptr != outError)
-							*outError = "Could not match function signature for script function of name '" + functionName + "'";
+							*outError = "Could not match function signature for script function of name '" + std::string(functionName) + "'";
+						controlFlow.mCallStack.clear();
 						return false;
 					}
 					RuntimeFunction* runtimeFunction = getRuntimeFunction(static_cast<const ScriptFunction&>(*function));
@@ -682,7 +686,7 @@ namespace lemon
 			{
 				for (uint16 i = 0; i < controlFlow.mCallStack.count; ++i)
 				{
-					serializer.write(controlFlow.mCallStack[i].mRuntimeFunction->mFunction->getName());
+					serializer.write(controlFlow.mCallStack[i].mRuntimeFunction->mFunction->getName().getString());
 					serializer.write(controlFlow.mCallStack[i].mRuntimeFunction->mFunction->getSignatureHash());
 					serializer.writeAs<uint32>(controlFlow.mCallStack[i].mRuntimeFunction->translateFromRuntimeProgramCounter(controlFlow.mCallStack[i].mProgramCounter));
 
@@ -732,7 +736,7 @@ namespace lemon
 					Variable* variable = mProgram->getGlobalVariableByName(nameHash);
 					if (nullptr != variable && variable->getType() == Variable::Type::GLOBAL)
 					{
-						const size_t index = variable->getId() & 0x0fffffff;
+						const size_t index = variable->getID() & 0x0fffffff;
 						RMX_CHECK(index < mGlobalVariables.size(), "Invalid global variable index", continue);
 						mGlobalVariables[index] = value;
 					}
@@ -744,7 +748,7 @@ namespace lemon
 				serializer.writeAs<uint32>(mGlobalVariables.size());
 				for (size_t i = 0; i < mGlobalVariables.size(); ++i)
 				{
-					serializer.write(mProgram->getGlobalVariables()[i]->getName());
+					serializer.write(mProgram->getGlobalVariables()[i]->getName().getString());
 					serializer.write<uint64>(mGlobalVariables[i]);
 				}
 			}

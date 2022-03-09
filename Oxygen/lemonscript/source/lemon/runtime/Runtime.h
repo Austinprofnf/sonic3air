@@ -8,16 +8,14 @@
 
 #pragma once
 
-#include "lemon/program/StoredString.h"
+#include "lemon/program/StringRef.h"
 #include "lemon/runtime/ControlFlow.h"
-#include <unordered_map>
 
 
 namespace lemon
 {
 	class Function;
 	class Program;
-	class StoredString;
 	class UserDefinedFunction;
 	class Variable;
 	struct RuntimeOpcode;
@@ -81,6 +79,7 @@ namespace lemon
 	friend class OpcodeExec;
 	friend class OptimizedOpcodeExec;
 	friend class NativizedCode;
+	friend class RuntimeFunction;
 	friend struct RuntimeOpcodeContext;
 
 	public:
@@ -131,10 +130,8 @@ namespace lemon
 		RuntimeFunction* getRuntimeFunctionBySignature(uint64 signatureHash, size_t index = 0);
 
 		bool hasStringWithKey(uint64 key) const;
-		const StoredString* resolveStringByKey(uint64 key) const;
-		uint64 addString(const std::string& str);
-		uint64 addString(const std::string_view& str);
-		uint64 addString(const char* str, size_t length);
+		const FlyweightString* resolveStringByKey(uint64 key) const;
+		uint64 addString(std::string_view str);
 
 		int64 getGlobalVariableValue(const Variable& variable);
 		void setGlobalVariableValue(const Variable& variable, int64 value);
@@ -168,6 +165,7 @@ namespace lemon
 		std::vector<RuntimeFunction> mRuntimeFunctions;
 		std::unordered_map<const ScriptFunction*, RuntimeFunction*> mRuntimeFunctionsMapped;
 		std::unordered_map<uint64, std::vector<RuntimeFunction*>> mRuntimeFunctionsBySignature;   // Key is the hashed function name + signature hash
+		rmx::OneTimeAllocPool mRuntimeOpcodesPool;
 
 		std::vector<int64> mGlobalVariables;
 

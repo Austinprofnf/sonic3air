@@ -11,6 +11,8 @@
 #include "lemon/compiler/Definitions.h"
 #include "lemon/compiler/Operators.h"
 #include "lemon/compiler/Token.h"
+#include "lemon/program/GlobalsLookup.h"
+#include "lemon/utility/FlyweightString.h"
 
 
 namespace lemon
@@ -73,7 +75,7 @@ namespace lemon
 		inline LabelToken() : Token(TYPE) {}
 
 	public:
-		std::string mName;
+		FlyweightString mName;
 	};
 
 
@@ -102,7 +104,8 @@ namespace lemon
 		inline IdentifierToken() : StatementToken(TYPE) {}
 
 	public:
-		std::string mIdentifier;
+		FlyweightString mName;
+		const GlobalsLookup::Identifier* mResolved = nullptr;
 	};
 
 
@@ -159,6 +162,7 @@ namespace lemon
 		Operator mOperator = Operator::_INVALID;
 		TokenPtr<StatementToken> mLeft;
 		TokenPtr<StatementToken> mRight;
+		const Function* mFunction = nullptr;	// Usually a null pointer, except if a certain function is enforced
 	};
 
 
@@ -184,10 +188,9 @@ namespace lemon
 		inline FunctionToken() : StatementToken(TYPE) {}
 
 	public:
-		std::string mFunctionName;
 		const Function* mFunction = nullptr;
 		bool mIsBaseCall = false;
-		TokenPtr<ParenthesisToken> mParenthesis;
+		std::vector<TokenPtr<StatementToken>> mParameters;
 	};
 
 

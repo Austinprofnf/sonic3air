@@ -9,6 +9,8 @@
 #pragma once
 
 #include "lemon/program/DataType.h"
+#include "lemon/utility/FlyweightString.h"
+
 #include <functional>
 
 
@@ -34,9 +36,8 @@ namespace lemon
 		virtual void setValue(int64 value) = 0;
 
 		inline Type getType() const  { return mType; }
-		inline const std::string& getName() const  { return mName; }
-		inline uint64 getNameHash() const  { return mNameHash; }
-		inline uint32 getId() const  { return mId; }
+		inline FlyweightString getName() const  { return mName; }
+		inline uint32 getID() const  { return mID; }
 		inline const DataTypeDefinition* getDataType() const  { return mDataType; }
 
 	protected:
@@ -44,9 +45,8 @@ namespace lemon
 
 	private:
 		Type mType;
-		std::string mName;
-		uint64 mNameHash = 0;
-		uint32 mId = 0;
+		FlyweightString mName;
+		uint32 mID = 0;
 		const DataTypeDefinition* mDataType = nullptr;
 	};
 
