@@ -42,13 +42,13 @@ namespace
 
 			// Check if it was caused inside a script function
 			{
-				std::string functionName;
+				std::string_view functionName;
 				std::wstring fileName;
 				uint32 lineNumber = 0;
 				std::string moduleName;
 				if (LemonScriptRuntime::getCurrentScriptFunction(&functionName, &fileName, &lineNumber, &moduleName))
 				{
-					text += "\n\nCaused during script execution in function '" + functionName + "' at line " + std::to_string(lineNumber) + " of file '" + WString(fileName).toStdString() + "' in module '" + moduleName + "'.";
+					text += "\n\nCaused during script execution in function '" + std::string(functionName) + "' at line " + std::to_string(lineNumber) + " of file '" + WString(fileName).toStdString() + "' in module '" + moduleName + "'.";
 				}
 			}
 
@@ -85,7 +85,7 @@ namespace oxygen
 	void Logging::startup(const std::wstring& filename)
 	{
 		rmx::Logging::addLogger(*new rmx::StdCoutLogger());
-		rmx::Logging::addLogger(*new rmx::FileLogger(filename));
+		rmx::Logging::addLogger(*new rmx::FileLogger(filename, true));
 
 		// Register as logger and message box callback for rmx error handling
 		rmx::ErrorHandling::mLogger = &mErrorLogger;
