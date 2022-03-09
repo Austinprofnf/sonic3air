@@ -11,6 +11,7 @@
 #include "oxygen_netcore/network/RequestBase.h"
 #include "oxygen_netcore/network/internal/ReceivedPacketCache.h"
 #include "oxygen_netcore/network/internal/SentPacketCache.h"
+#include "oxygen_netcore/network/internal/WebSocketClient.h"
 
 class ConnectionManager;
 
@@ -20,6 +21,7 @@ class NetConnection
 {
 friend class ServerClientBase;
 friend class ConnectionManager;
+friend class WebSocketClient;
 friend class highlevel::RequestBase;
 
 public:
@@ -28,10 +30,11 @@ public:
 
 	enum class State
 	{
-		EMPTY,
-		REQUESTED_CONNECTION,
-		CONNECTED,
-		DISCONNECTED
+		EMPTY,					// Not connected in any way
+		TCP_READY,				// Has a valid TCP socket, but not further setup yet
+		REQUESTED_CONNECTION,	// Sent a StartConnectionPacket, no response yet (only used on client side)
+		CONNECTED,				// Fully connected
+		DISCONNECTED			// Connection was lost or intentionally disconnected (see DisconnectReason)
 	};
 
 	enum class DisconnectReason
@@ -51,10 +54,18 @@ public:
 		};
 	};
 
+	enum class SocketType
+	{
+		UDP_SOCKET,		// UDP usage -- this is the default
+		TCP_SOCKET,		// TCP usage -- fallback if UDP is not available
+		WEB_SOCKET		// Emscripten web socket usage, used only on client side
+	};
+
 public:
 	static uint64 buildSenderKey(const SocketAddress& remoteAddress, uint16 remoteConnectionID);
 
 public:
+	NetConnection();
 	virtual ~NetConnection();
 
 	void clear();
@@ -65,12 +76,13 @@ public:
 	inline const SocketAddress& getRemoteAddress() const  { return mRemoteAddress; }
 	inline uint64 getSenderKey() const			{ return mSenderKey; }
 
-	UDPSocket* getSocket() const;
+	UDPSocket* getUDPSocket() const;
 
 	uint8 getLowLevelProtocolVersion() const	{ return mLowLevelProtocolVersion; }
 	uint8 getHighLevelProtocolVersion() const	{ return mHighLevelProtocolVersion; }
 	void setProtocolVersions(uint8 lowLevelProtocolVersion, uint8 highLevelProtocolVersion);
 
+	void setupWithTCPSocket(ConnectionManager& connectionManager, TCPSocket& socketToMove, uint64 currentTimestamp);
 	bool startConnectTo(ConnectionManager& connectionManager, const SocketAddress& remoteAddress, uint64 currentTimestamp);
 	bool isConnectedTo(uint16 localConnectionID, uint16 remoteConnectionID, uint64 senderKey) const;
 	void disconnect(DisconnectReason disconnectReason = DisconnectReason::MANUAL);
@@ -85,14 +97,19 @@ public:
 
 private:
 	// Called by ServerClientBase
-	void acceptIncomingConnection(ConnectionManager& connectionManager, uint16 remoteConnectionID, const SocketAddress& remoteAddress, uint64 senderKey, uint64 currentTimestamp);
+	void acceptIncomingConnectionUDP(ConnectionManager& connectionManager, uint16 remoteConnectionID, const SocketAddress& remoteAddress, uint64 senderKey, uint64 currentTimestamp);
+	void acceptIncomingConnectionTCP(ConnectionManager& connectionManager, uint16 remoteConnectionID, uint64 currentTimestamp);
 	void sendAcceptConnectionPacket();
 	void handleLowLevelPacket(ReceivedPacket& receivedPacket);
 
 	// Called by RequestBsae
 	void unregisterRequest(highlevel::RequestBase& request);
 
+	// Called by WebSocketClient
+	bool receivedWebSocketPacket(const std::vector<uint8>& content);
+
 	// Internal use
+	bool finishStartConnect();
 	bool sendPacketInternal(const std::vector<uint8>& content);
 	void writeLowLevelPacketContent(VectorBinarySerializer& serializer, lowlevel::PacketBase& lowLevelPacket);
 	bool sendLowLevelPacket(lowlevel::PacketBase& lowLevelPacket, std::vector<uint8>& buffer);
@@ -106,6 +123,12 @@ private:
 	State mState = State::EMPTY;
 	DisconnectReason mDisconnectReason = DisconnectReason::UNKNOWN;
 	ConnectionManager* mConnectionManager = nullptr;
+
+	SocketType mSocketType = SocketType::UDP_SOCKET;
+	TCPSocket mTCPSocket;				// Used only for SocketType::TCP_SOCKET
+	WebSocketClient mWebSocketClient;	// Used only for SocketType::WEB_SOCKET
+	bool mIsWebSocketServer = false;	// Set on server side if is a WebSocket connection; used only for SocketType::TCP_SOCKET
+
 	uint16 mLocalConnectionID = 0;
 	uint16 mRemoteConnectionID = 0;
 	SocketAddress mRemoteAddress;
