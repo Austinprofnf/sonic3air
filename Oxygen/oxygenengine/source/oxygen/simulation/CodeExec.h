@@ -90,25 +90,25 @@ public:
 	{
 		struct Hit
 		{
-			uint32 mWrittenValue;
-			uint32 mAddress;
-			uint16 mBytes;
+			uint32 mWrittenValue = 0;
+			uint32 mAddress = 0;
+			uint16 mBytes = 0;
 			Location mLocation;
 			std::vector<uint64> mCallStack;
 		};
 
 		std::vector<Hit> mHits;
-		uint32 mAddress;
-		uint16 mBytes;
-		bool mPersistent;
-		uint32 mInitialValue;
+		uint32 mAddress = 0;
+		uint16 mBytes = 0;
+		bool mPersistent = false;
+		uint32 mInitialValue = 0;
 		Location mLastHitLocation;
 	};
 
 	struct VRAMWrite
 	{
-		uint16 mAddress;
-		uint16 mSize;
+		uint16 mAddress = 0;
+		uint16 mSize = 0;
 		Location mLocation;
 		std::vector<uint64> mCallStack;
 	};
@@ -124,7 +124,8 @@ public:
 	void reset();
 
 	void cleanScriptDebug();
-	bool reloadScripts(bool enforceFullReload, bool performReinitRuntime, bool hasSaveState);
+	bool reloadScripts(bool enforceFullReload, bool retainRuntimeState);
+	void restoreRuntimeState(bool hasSaveState);
 	void reinitRuntime(const LemonScriptRuntime::CallStackWithLabels* enforcedCallStack, CallStackInitPolicy callStackInitPolicy, const std::vector<uint8>* serializedRuntimeState = nullptr);
 
 	inline ExecutionState getExecutionState() const  { return mExecutionState; }
@@ -140,7 +141,7 @@ public:
 	inline LemonScriptRuntime& getLemonScriptRuntime()	{ return mLemonScriptRuntime; }
 	inline LemonScriptProgram& getLemonScriptProgram()	{ return mLemonScriptProgram; }
 
-	void setupCallFrame(const std::string& functionName, const std::string& labelName = "");
+	void setupCallFrame(std::string_view functionName, std::string_view labelName = "");
 
 	void processCallFrames();
 	inline const std::vector<CallFrame>& getCallFrames() const  { return mMainCallFrameTracking.mCallFrames; }
@@ -171,7 +172,6 @@ private:
 	void applyCallFramesToAdd();
 
 	void popCallFrame();
-	void writeCurrentCallStack(std::vector<std::string>& outCallStack);
 
 	uint32 getCurrentWatchValue(uint32 address, uint16 bytes) const;
 

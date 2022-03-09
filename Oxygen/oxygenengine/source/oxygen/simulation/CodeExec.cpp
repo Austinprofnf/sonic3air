@@ -94,7 +94,7 @@ const std::string& CodeExec::Location::toString() const
 			std::string scriptFilename;
 			uint32 lineNumber;
 			mCodeExec->getLemonScriptProgram().resolveLocation(*mFunction, (uint32)mProgramCounter, scriptFilename, lineNumber);
-			mResolvedString = mFunction->getName() + ", line " + std::to_string(lineNumber);
+			mResolvedString = std::string(mFunction->getName().getString()) + ", line " + std::to_string(lineNumber);
 		}
 	}
 	return mResolvedString;
@@ -146,7 +146,7 @@ void CodeExec::CallFrameTracking::writeCurrentCallStack(std::vector<uint64>& out
 	for (int i = (int)mCallStack.size() - 1; i >= 0; --i)
 	{
 		const lemon::Function* function = mCallFrames[mCallStack[i]].mFunction;
-		outCallStack.push_back((nullptr != function) ? function->getNameHash() : 0);
+		outCallStack.push_back((nullptr != function) ? function->getName().getHash() : 0);
 	}
 }
 
@@ -157,7 +157,7 @@ void CodeExec::CallFrameTracking::writeCurrentCallStack(std::vector<std::string>
 	for (int i = (int)mCallStack.size() - 1; i >= 0; --i)
 	{
 		const lemon::Function* function = mCallFrames[mCallStack[i]].mFunction;
-		outCallStack.push_back((nullptr != function) ? function->getName() : "");
+		outCallStack.push_back((nullptr != function) ? std::string(function->getName().getString()) : "");
 	}
 }
 
@@ -247,22 +247,29 @@ void CodeExec::cleanScriptDebug()
 	mVRAMWrites.clear();
 }
 
-bool CodeExec::reloadScripts(bool enforceFullReload, bool performReinitRuntime, bool hasSaveState)
+bool CodeExec::reloadScripts(bool enforceFullReload, bool retainRuntimeState)
 {
-	// If the runtime is already active, save its current state
-	if (hasValidState() && mLemonScriptRuntime.getCallStackSize() != 0)
+	if (retainRuntimeState)
 	{
-		VectorBinarySerializer serializer(false, mSerializedRuntimeState);
-		if (!getLemonScriptRuntime().serializeRuntime(serializer))
+		// If the runtime is already active, save its current state
+		if (hasValidState() && mLemonScriptRuntime.getCallStackSize() != 0)
 		{
-			mSerializedRuntimeState.clear();
+			VectorBinarySerializer serializer(false, mSerializedRuntimeState);
+			if (!getLemonScriptRuntime().serializeRuntime(serializer))
+			{
+				mSerializedRuntimeState.clear();
+			}
 		}
+	}
+	else
+	{
+		// Clear the old serialization, it's not needed
+		mSerializedRuntimeState.clear();
 	}
 	mExecutionState = ExecutionState::INACTIVE;
 
 	const Configuration& config = Configuration::instance();
 	LemonScriptProgram::LoadOptions options;
-	options.mPreprocessorDefinitions = config.mPreprocessorDefinitions;
 	options.mEnforceFullReload = enforceFullReload;
 	options.mModuleSelection = EngineMain::getDelegate().mayLoadScriptMods() ? LemonScriptProgram::LoadOptions::ModuleSelection::ALL_MODS : LemonScriptProgram::LoadOptions::ModuleSelection::BASE_GAME_ONLY;
 	const WString mainScriptPath = config.mScriptsDir + config.mMainScriptName;
@@ -272,27 +279,24 @@ bool CodeExec::reloadScripts(bool enforceFullReload, bool performReinitRuntime, 
 	{
 		mLemonScriptRuntime.onProgramUpdated();
 	}
+	cleanScriptDebug();
 
-	if (result && performReinitRuntime)
+	return result;
+}
+
+void CodeExec::restoreRuntimeState(bool hasSaveState)
+{
+	if (mSerializedRuntimeState.empty())
 	{
-		if (mSerializedRuntimeState.empty())
-		{
-			// We don't have a valid runtime state, so it has to be reloaded from ASM, or we have to reset
-			reinitRuntime(nullptr, hasSaveState ? CallStackInitPolicy::READ_FROM_ASM : CallStackInitPolicy::RESET);
-		}
-		else
-		{
-			// Scripts got reloaded in-game
-			reinitRuntime(nullptr, CallStackInitPolicy::READ_FROM_ASM, &mSerializedRuntimeState);
-			mSerializedRuntimeState.clear();	// Not needed any more now
-		}
+		// We don't have a valid runtime state, so it has to be reloaded from ASM, or we have to reset
+		reinitRuntime(nullptr, hasSaveState ? CallStackInitPolicy::READ_FROM_ASM : CallStackInitPolicy::RESET);
 	}
 	else
 	{
-		cleanScriptDebug();
+		// Scripts got reloaded in-game
+		reinitRuntime(nullptr, CallStackInitPolicy::READ_FROM_ASM, &mSerializedRuntimeState);
+		mSerializedRuntimeState.clear();	// Not needed any more now
 	}
-
-	return result;
 }
 
 void CodeExec::reinitRuntime(const LemonScriptRuntime::CallStackWithLabels* enforcedCallStack, CallStackInitPolicy callStackInitPolicy, const std::vector<uint8>* serializedRuntimeState)
@@ -490,7 +494,7 @@ bool CodeExec::executeScriptFunction(const std::string& functionName, bool showE
 	return false;
 }
 
-void CodeExec::setupCallFrame(const std::string& functionName, const std::string& labelName)
+void CodeExec::setupCallFrame(std::string_view functionName, std::string_view labelName)
 {
 	mCallFramesToAdd.emplace_back(functionName, labelName);
 	mHasCallFramesToAdd = true;
@@ -552,6 +556,8 @@ void CodeExec::addWatch(uint32 address, uint16 bytes, bool persistent)
 
 void CodeExec::removeWatch(uint32 address, uint16 bytes)
 {
+	address &= 0x00ffffff;
+
 	// Try to find the watch
 	int index = -1;
 	for (int i = 0; i < (int)mWatches.size(); ++i)

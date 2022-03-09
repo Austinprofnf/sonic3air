@@ -59,17 +59,6 @@ namespace
 			memcpy(dst, &data[offset], bytes);
 			return bytes;
 		}
-
-		const std::string* tryResolveString(uint64 stringKey)
-		{
-			lemon::Runtime* runtime = lemon::Runtime::getActiveRuntime();
-			RMX_ASSERT(nullptr != runtime, "No active lemon script runtime");
-
-			const lemon::StoredString* str = runtime->resolveStringByKey(stringKey);
-			RMX_CHECK(nullptr != str, "Could not resolve string from key", return nullptr);
-
-			return &str->getString();
-		}
 	}
 
 
@@ -84,7 +73,7 @@ namespace
 
 			if (text.isValid())
 			{
-				RMX_ERROR("Script assertion failed:\n'" << *text << "'.\nIn " << locationText << ".", );
+				RMX_ERROR("Script assertion failed:\n'" << text.getString() << "'.\nIn " << locationText << ".", );
 			}
 			else
 			{
@@ -194,9 +183,9 @@ namespace
 	}
 
 
-	uint32 System_loadPersistentData(uint32 targetAddress, uint64 key, uint32 maxBytes)
+	uint32 System_loadPersistentData(uint32 targetAddress, lemon::StringRef key, uint32 maxBytes)
 	{
-		const std::vector<uint8>& data = PersistentData::instance().getData(key);
+		const std::vector<uint8>& data = PersistentData::instance().getData(key.getHash());
 		return detail::loadData(targetAddress, data, 0, maxBytes);
 	}
 
@@ -210,7 +199,7 @@ namespace
 
 		if (key.isValid())
 		{
-			PersistentData::instance().setData(*key, data);
+			PersistentData::instance().setData(key.getString(), data);
 		}
 	}
 
@@ -232,7 +221,7 @@ namespace
 
 		CodeExec* codeExec = CodeExec::getActiveInstance();
 		RMX_CHECK(nullptr != codeExec, "No running CodeExec instance", return);
-		codeExec->setupCallFrame(*functionName, labelName.isValid() ? *labelName : "");
+		codeExec->setupCallFrame(functionName.getString(), labelName.getString());
 	}
 
 	void System_setupCallFrame1(lemon::StringRef functionName)
@@ -256,15 +245,15 @@ namespace
 		return (System_getPlatformFlags() & flag) != 0;
 	}
 
-	bool System_hasExternalRawData(uint64 key)
+	bool System_hasExternalRawData(lemon::StringRef key)
 	{
-		const std::vector<const ResourcesCache::RawData*>& rawDataVector = ResourcesCache::instance().getRawData(key);
+		const std::vector<const ResourcesCache::RawData*>& rawDataVector = ResourcesCache::instance().getRawData(key.getHash());
 		return !rawDataVector.empty();
 	}
 
-	uint32 System_loadExternalRawData1(uint64 key, uint32 targetAddress, uint32 offset, uint32 maxBytes, bool loadOriginalData, bool loadModdedData)
+	uint32 System_loadExternalRawData1(lemon::StringRef key, uint32 targetAddress, uint32 offset, uint32 maxBytes, bool loadOriginalData, bool loadModdedData)
 	{
-		const std::vector<const ResourcesCache::RawData*>& rawDataVector = ResourcesCache::instance().getRawData(key);
+		const std::vector<const ResourcesCache::RawData*>& rawDataVector = ResourcesCache::instance().getRawData(key.getHash());
 		const ResourcesCache::RawData* rawData = nullptr;
 		for (int i = (int)rawDataVector.size() - 1; i >= 0; --i)
 		{
@@ -283,20 +272,20 @@ namespace
 		return detail::loadData(targetAddress, rawData->mContent, offset, maxBytes);
 	}
 
-	uint32 System_loadExternalRawData2(uint64 key, uint32 targetAddress)
+	uint32 System_loadExternalRawData2(lemon::StringRef key, uint32 targetAddress)
 	{
 		return System_loadExternalRawData1(key, targetAddress, 0, 0, true, true);
 	}
 
-	bool System_hasExternalPaletteData(uint64 key, uint8 line)
+	bool System_hasExternalPaletteData(lemon::StringRef key, uint8 line)
 	{
-		const ResourcesCache::Palette* palette = ResourcesCache::instance().getPalette(key, line);
+		const ResourcesCache::Palette* palette = ResourcesCache::instance().getPalette(key.getHash(), line);
 		return (nullptr != palette);
 	}
 
-	uint16 System_loadExternalPaletteData(uint64 key, uint8 line, uint32 targetAddress, uint8 maxColors)
+	uint16 System_loadExternalPaletteData(lemon::StringRef key, uint8 line, uint32 targetAddress, uint8 maxColors)
 	{
-		const ResourcesCache::Palette* palette = ResourcesCache::instance().getPalette(key, line);
+		const ResourcesCache::Palette* palette = ResourcesCache::instance().getPalette(key.getHash(), line);
 		if (nullptr == palette)
 			return 0;
 
@@ -311,7 +300,7 @@ namespace
 	}
 
 
-	void debugLogInternal(const std::string& valueString)
+	void debugLogInternal(std::string_view valueString)
 	{
 		uint32 lineNumber = 0;
 		const bool success = LemonScriptRuntime::getCurrentScriptFunction(nullptr, nullptr, &lineNumber, nullptr);
@@ -330,11 +319,11 @@ namespace
 		debugLogInternal(valueString);
 	}
 
-	void debugLog(lemon::StringRef string)
+	void debugLog(lemon::StringRef text)
 	{
-		if (string.isValid())
+		if (text.isValid())
 		{
-			debugLogInternal(*string);
+			debugLogInternal(text.getString());
 		}
 	}
 
@@ -350,7 +339,7 @@ namespace
 			EmulatorInterface& emulatorInterface = codeExec->getEmulatorInterface();
 
 			LogDisplay::ColorLogEntry entry;
-			entry.mName = *name;
+			entry.mName = name.getString();
 			entry.mColors.reserve(numColors);
 			for (uint8 i = 0; i < numColors; ++i)
 			{
@@ -537,13 +526,15 @@ namespace
 		RMX_CHECK((bytes & 1) == 0, "Number of bytes in VDP_copyToVRAM must be divisible by two, but is " << bytes, bytes &= 0xfffe);
 		RMX_CHECK(uint32(mWriteAddress) + bytes <= 0x10000, "Invalid VRAM access from " << rmx::hexString(mWriteAddress, 8) << " to " << rmx::hexString(mWriteAddress+bytes-1, 8) << " in VDP_copyToVRAM", return);
 
-		if (nullptr != gDebugNotificationInterface)
-			gDebugNotificationInterface->onVRAMWrite(mWriteAddress, bytes);
-
 		EmulatorInterface& emulatorInterface = EmulatorInterface::instance();
 		if (mWriteIncrement == 2)
 		{
 			// Optimized version of the code below
+			if (nullptr != gDebugNotificationInterface)
+			{
+				gDebugNotificationInterface->onVRAMWrite(mWriteAddress, bytes);
+			}
+
 			uint16* dst = (uint16*)(emulatorInterface.getVRam() + mWriteAddress);
 			const uint16* src = (uint16*)(emulatorInterface.getMemoryPointer(address, false, bytes));
 			const uint16* end = src + (bytes / 2);
@@ -555,6 +546,12 @@ namespace
 		}
 		else
 		{
+			if (nullptr != gDebugNotificationInterface)
+			{
+				for (uint16 i = 0; i < bytes; i += 2)
+					gDebugNotificationInterface->onVRAMWrite(mWriteAddress + mWriteIncrement * i/2, 2);
+			}
+
 			for (uint16 i = 0; i < bytes; i += 2)
 			{
 				uint16* dst = (uint16*)(emulatorInterface.getVRam() + mWriteAddress);
@@ -834,7 +831,7 @@ namespace
 		{
 			if (categoryName.isValid())
 			{
-				SpriteCache::instance().dumpSprite(key, *categoryName, spriteNumber, atex);
+				SpriteCache::instance().dumpSprite(key, categoryName.getString(), spriteNumber, atex);
 			}
 		}
 	}
@@ -894,18 +891,24 @@ namespace
 		if (!success)
 		{
 			// Audio collections expect lowercase IDs, so we might need to do the conversion here first
-			const std::string* textString = detail::tryResolveString(sfxId);
-			if (nullptr != textString)
+			lemon::Runtime* runtime = lemon::Runtime::getActiveRuntime();
+			if (nullptr != runtime)
 			{
-				// Does the string contain any uppercase letters?
-				const auto it = std::find_if(textString->begin(), textString->end(), [](char ch) { return (ch >= 'A' && ch <= 'Z'); } );
-				if (it != textString->end())
+				const lemon::FlyweightString* str = runtime->resolveStringByKey(sfxId);
+				if (nullptr != str)
 				{
-					// Convert to lowercase and try again
-					String str = *textString;
-					str.lowerCase();
-					sfxId = rmx::getMurmur2_64(str);
-					EngineMain::instance().getAudioOut().playAudioBase(sfxId, contextId);
+					const std::string_view textString = str->getString();
+
+					// Does the string contain any uppercase letters?
+					const auto it = std::find_if(textString.begin(), textString.end(), [](char ch) { return (ch >= 'A' && ch <= 'Z'); } );
+					if (it != textString.end())
+					{
+						// Convert to lowercase and try again
+						String str = textString;
+						str.lowerCase();
+						sfxId = rmx::getMurmur2_64(str);
+						EngineMain::instance().getAudioOut().playAudioBase(sfxId, contextId);
+					}
 				}
 			}
 		}
@@ -940,7 +943,7 @@ namespace
 	{
 		if (postfix.isValid())
 		{
-			EngineMain::instance().getAudioOut().enableAudioModifier(channel, context, *postfix, (float)relativeSpeed / 65536.0f);
+			EngineMain::instance().getAudioOut().enableAudioModifier(channel, context, postfix.getString(), (float)relativeSpeed / 65536.0f);
 		}
 	}
 
@@ -952,15 +955,11 @@ namespace
 
 	const Mod* getActiveModByNameHash(lemon::StringRef modName)
 	{
-		if (!modName.isValid())
-			return nullptr;
-
-		// TODO: This can be optimized with a lookup map by mod name hash (which we already have from the parameter)
-		const auto& activeMods = ModManager::instance().getActiveMods();
-		for (const Mod* mod : activeMods)
+		if (modName.isValid())
 		{
-			if (mod->mDisplayName == *modName)
-				return mod;
+			Mod*const* modPtr = mapFind(ModManager::instance().getActiveModsByNameHash(), modName.getHash());
+			if (nullptr != modPtr)
+				return *modPtr;
 		}
 		return nullptr;
 	}
@@ -999,7 +998,7 @@ namespace
 		RMX_CHECK(alignment >= 1 && alignment <= 9, "Invalid alignment " << alignment << " used for drawing text, fallback to alignment = 1", alignment = 1);
 		if (fontKey.isValid() && text.isValid())
 		{
-			RenderParts::instance().getOverlayManager().addText(*fontKey, fontKey.mHash, Vec2i(px, py), *text, text.mHash, Color::fromRGBA32(tintColor), (int)alignment, (int)spacing, renderQueue, useWorldSpace ? OverlayManager::Space::WORLD : OverlayManager::Space::SCREEN);
+			RenderParts::instance().getOverlayManager().addText(fontKey.getString(), fontKey.getHash(), Vec2i(px, py), text.getString(), text.getHash(), Color::fromRGBA32(tintColor), (int)alignment, (int)spacing, renderQueue, useWorldSpace ? OverlayManager::Space::WORLD : OverlayManager::Space::SCREEN);
 		}
 	}
 
@@ -1042,7 +1041,7 @@ namespace
 			if (filename.isValid())
 			{
 				const uint8* src = emulatorInterface.getMemoryPointer(startAddress, false, bytes);
-				FTX::FileSystem->saveFile(*filename, src, (size_t)bytes);
+				FTX::FileSystem->saveFile(filename.getString(), src, (size_t)bytes);
 			}
 		}
 	}
@@ -1062,7 +1061,7 @@ namespace
 			{
 				if (category.isValid())
 				{
-					return analyser->hasEntry(*category, address);
+					return analyser->hasEntry(category.getString(), address);
 				}
 			}
 		}
@@ -1078,7 +1077,7 @@ namespace
 			{
 				if (category.isValid())
 				{
-					analyser->beginEntry(*category, address);
+					analyser->beginEntry(category.getString(), address);
 				}
 			}
 		}
@@ -1105,7 +1104,7 @@ namespace
 			{
 				if (key.isValid() && value.isValid())
 				{
-					analyser->addKeyValue(*key, *value);
+					analyser->addKeyValue(key.getString(), value.getString());
 				}
 			}
 		}
@@ -1120,7 +1119,7 @@ namespace
 			{
 				if (key.isValid())
 				{
-					analyser->beginObject(*key);
+					analyser->beginObject(key.getString());
 				}
 			}
 		}
@@ -1142,14 +1141,14 @@ namespace
 	{
 		if (!shortName.isValid())
 			return false;
-		return Application::instance().getDebugSidePanel()->setupCustomCategory(*fullName, (*shortName)[0]);
+		return Application::instance().getDebugSidePanel()->setupCustomCategory(fullName.getString(), shortName.getString()[0]);
 	}
 
-	bool System_SidePanel_addOption(lemon::StringRef string, bool defaultValue)
+	bool System_SidePanel_addOption(lemon::StringRef text, bool defaultValue)
 	{
-		if (!string.isValid())
+		if (!text.isValid())
 			return false;
-		return Application::instance().getDebugSidePanel()->addOption(*string, defaultValue);
+		return Application::instance().getDebugSidePanel()->addOption(text.getString(), defaultValue);
 	}
 
 	void System_SidePanel_addEntry(uint64 key)
@@ -1157,17 +1156,17 @@ namespace
 		return Application::instance().getDebugSidePanel()->addEntry(key);
 	}
 
-	void System_SidePanel_addLine1(lemon::StringRef string, int8 indent, uint32 color)
+	void System_SidePanel_addLine1(lemon::StringRef text, int8 indent, uint32 color)
 	{
-		if (string.isValid())
+		if (text.isValid())
 		{
-			Application::instance().getDebugSidePanel()->addLine(*string, (int)indent, Color::fromRGBA32(color));
+			Application::instance().getDebugSidePanel()->addLine(text.getString(), (int)indent, Color::fromRGBA32(color));
 		}
 	}
 
-	void System_SidePanel_addLine2(lemon::StringRef string, int8 indent)
+	void System_SidePanel_addLine2(lemon::StringRef str, int8 indent)
 	{
-		System_SidePanel_addLine1(string, indent, 0xffffffff);
+		System_SidePanel_addLine1(str, indent, 0xffffffff);
 	}
 
 	bool System_SidePanel_isEntryHovered(uint64 key)
@@ -1175,11 +1174,11 @@ namespace
 		return Application::instance().getDebugSidePanel()->isEntryHovered(key);
 	}
 
-	void System_writeDisplayLine(lemon::StringRef string)
+	void System_writeDisplayLine(lemon::StringRef text)
 	{
-		if (string.isValid())
+		if (text.isValid())
 		{
-			LogDisplay::instance().setLogDisplay(*string, 2.0f);
+			LogDisplay::instance().setLogDisplay(text.getString(), 2.0f);
 		}
 	}
 
@@ -1775,7 +1774,7 @@ void LemonScriptBindings::registerBindings(lemon::Module& module)
 		}
 
 		module.addUserDefinedFunction("debugLog", lemon::wrap(&debugLog), defaultFlags)
-			.setParameterInfo(0, "string");
+			.setParameterInfo(0, "text");
 
 		module.addUserDefinedFunction("debugLogColors", lemon::wrap(&debugLogColors), defaultFlags)
 			.setParameterInfo(0, "name")
@@ -1833,19 +1832,19 @@ void LemonScriptBindings::registerBindings(lemon::Module& module)
 			.setParameterInfo(1, "fullName");
 
 		module.addUserDefinedFunction("System.SidePanel.addOption", lemon::wrap(&System_SidePanel_addOption), defaultFlags)
-			.setParameterInfo(0, "string")
+			.setParameterInfo(0, "text")
 			.setParameterInfo(1, "defaultValue");
 
 		module.addUserDefinedFunction("System.SidePanel.addEntry", lemon::wrap(&System_SidePanel_addEntry), defaultFlags)
 			.setParameterInfo(0, "key");
 
 		module.addUserDefinedFunction("System.SidePanel.addLine", lemon::wrap(&System_SidePanel_addLine1), defaultFlags)
-			.setParameterInfo(0, "string")
+			.setParameterInfo(0, "text")
 			.setParameterInfo(1, "indent")
 			.setParameterInfo(2, "color");
 
 		module.addUserDefinedFunction("System.SidePanel.addLine", lemon::wrap(&System_SidePanel_addLine2), defaultFlags)
-			.setParameterInfo(0, "string")
+			.setParameterInfo(0, "text")
 			.setParameterInfo(1, "indent");
 
 		module.addUserDefinedFunction("System.SidePanel.isEntryHovered", lemon::wrap(&System_SidePanel_isEntryHovered), defaultFlags)
@@ -1854,7 +1853,7 @@ void LemonScriptBindings::registerBindings(lemon::Module& module)
 
 		// This is not really debugging-related, as it's meant to be written in non-developer environment as well
 		module.addUserDefinedFunction("System.writeDisplayLine", lemon::wrap(&System_writeDisplayLine), defaultFlags)
-			.setParameterInfo(0, "string");
+			.setParameterInfo(0, "text");
 	}
 
 	// Register game-specific script bindings

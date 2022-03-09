@@ -31,9 +31,9 @@ public:
 	typedef std::vector<std::pair<std::string, std::string>> CallStackWithLabels;
 
 public:
-	static bool getCurrentScriptFunction(std::string* outFunctionName, std::wstring* outFileName, uint32* outLineNumber, std::string* outModuleName);
+	static bool getCurrentScriptFunction(std::string_view* outFunctionName, std::wstring* outFileName, uint32* outLineNumber, std::string* outModuleName);
 	static std::string getCurrentScriptLocationString();
-	static const std::string* tryResolveStringHash(uint64 hash);
+	static const std::string_view* tryResolveStringHash(uint64 hash);
 
 public:
 	LemonScriptRuntime(LemonScriptProgram& program, EmulatorInterface& emulatorInterface);
@@ -66,7 +66,7 @@ public:
 
 private:
 	static std::string buildScriptLocationString(lemon::Runtime& runtime);
-	bool loadScriptModule(lemon::Module& module, lemon::GlobalsLookup& globalsLookup, const std::wstring& filename, const lemon::PreprocessorDefinitionMap& preprocessorDefinitions);
+	static uint32 getLineNumberInFile(const lemon::ScriptFunction& function, size_t programCounter);
 
 private:
 	struct Internal;

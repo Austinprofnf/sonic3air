@@ -10,7 +10,7 @@
 
 #include "oxygen/simulation/LemonScriptBindings.h"
 
-#include <lemon/compiler/PreprocessorDefinition.h>
+#include <lemon/utility/FlyweightString.h>
 
 
 namespace lemon
@@ -36,14 +36,13 @@ public:
 			ALL_MODS
 		};
 
-		lemon::PreprocessorDefinitionMap mPreprocessorDefinitions;
 		bool mEnforceFullReload = false;
 		ModuleSelection mModuleSelection = ModuleSelection::ALL_MODS;
 	};
 
 	struct GlobalDefine
 	{
-		std::string mName;
+		lemon::FlyweightString mName;
 		uint32 mAddress = 0;
 		uint8 mBytes = 0;
 		bool mSigned = false;
@@ -81,7 +80,7 @@ public:
 	const Hook* checkForAddressHook(uint32 address);
 	size_t getNumAddressHooks() const;
 
-	const std::string& getFunctionNameByHash(uint64 hash) const;
+	std::string_view getFunctionNameByHash(uint64 hash) const;
 	lemon::Variable* getGlobalVariableByHash(uint64 hash) const;
 	const std::vector<GlobalDefine>& getGlobalDefines() const  { return mGlobalDefines; }
 
@@ -91,11 +90,11 @@ public:
 	static void resolveLocation(const lemon::Function& function, uint32 programCounter, std::string& scriptFilename, uint32& lineNumber);
 
 private:
-	bool loadScriptModule(lemon::Module& module, lemon::GlobalsLookup& globalsLookup, const std::wstring& filename, const lemon::PreprocessorDefinitionMap& preprocessorDefinitions);
+	bool loadScriptModule(lemon::Module& module, lemon::GlobalsLookup& globalsLookup, const std::wstring& filename);
 	void evaluateFunctionPragmas();
 	void evaluateDefines();
 
-	Hook& addHook(Hook::Type type, uint32 address, const std::string& functionName);
+	Hook& addHook(Hook::Type type, uint32 address);
 
 private:
 	struct Internal;
